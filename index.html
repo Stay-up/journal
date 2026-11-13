@@ -139,7 +139,11 @@
   }
 
   // Dictée : reconnaissance vocale du navigateur, en français. Le texte dicté s'ajoute à ce qui est déjà écrit.
-  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // Sur iPhone, lancée depuis l'écran d'accueil, la reconnaissance vocale du navigateur fait planter la page :
+  // le bouton ouvre alors simplement le clavier, dont le micro fait la dictée.
+  const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const STANDALONE = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  const Speech = IOS ? null : (window.SpeechRecognition || window.webkitSpeechRecognition);
   let listening = null;
 
   function dictation(input, onInput) {
@@ -151,10 +155,10 @@
     mic.textContent = '🎤 Dicter';
     const hint = document.createElement('span');
     hint.className = 'hint';
-    const fallback = 'Dictée indisponible ici : touche le champ puis le micro 🎤 du clavier.';
+    const fallback = 'Appuie sur le micro 🎤 du clavier (en bas à droite) et parle.';
     mic.onclick = () => {
       if (listening) { listening.stop(); return; }
-      if (!Speech) { hint.textContent = fallback; input.focus(); return; }
+      if (!Speech) { input.focus(); hint.textContent = fallback; return; }
       const rec = new Speech();
       rec.lang = 'fr-FR';
       rec.continuous = true;
