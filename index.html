@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Journal">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon.png">
+<title>Journal</title>
+<!--
+  Journal du soir : formulaire autonome. Les questions et les réponses vivent dans le Google Sheet privé
+  « Journal du soir », derrière le script Apps Script (docs/journal/Code.gs).
+  Cette page ne contient aucune donnée : l'adresse du script et le code d'accès arrivent par le lien
+  d'installation (#u=…&k=…, jamais envoyé au serveur qui héberge la page) et restent sur le téléphone.
+-->
+<style>
+  :root { --bg: #f6f5f2; --card: #fff; --text: #1d1d1f; --muted: #6e6e73; --line: #e2e0dc; --accent: #2f6f5e; --on: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121212; --card: #1e1e1e; --text: #f2f2f2; --muted: #a0a0a5; --line: #333; --accent: #5fb39a; --on: #0d0d0d; }
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); }
+  body { margin: 0; color: var(--text); font: 17px/1.4 -apple-system, system-ui, sans-serif; }
+  main { max-width: 520px; margin: 0 auto; padding: calc(16px + env(safe-area-inset-top)) 16px 120px; }
+  h1 { font-size: 26px; margin: 8px 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 16px; min-height: 24px; }
+  .days { display: flex; gap: 8px; margin-bottom: 18px; }
+  .q { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .q label { display: block; font-weight: 600; margin-bottom: 10px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
+  button.opt, .days button { flex: 1; min-width: 44px; min-height: 48px; border: 1px solid var(--line); border-radius: 10px;
+    background: transparent; color: var(--text); font-size: 18px; }
+  button.opt.sel, .days button.sel { background: var(--accent); border-color: var(--accent); color: var(--on); font-weight: 600; }
+  textarea, input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px;
+    background: transparent; color: var(--text); font: inherit; }
+  textarea { min-height: 80px; resize: vertical; }
+  input { min-height: 48px; font-size: 18px; }
+  .dict { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  button.mic { min-height: 40px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px;
+    background: transparent; color: var(--text); font-size: 16px; }
+  button.mic.on { background: #c0392b; border-color: #c0392b; color: #fff; }
+  .hint { color: var(--muted); font-size: 14px; }
+  .save { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: var(--bg); border-top: 1px solid var(--line); }
+  .save button, .setup button { display: block; width: 100%; max-width: 520px; margin: 0 auto; min-height: 54px; border: 0;
+    border-radius: 12px; background: var(--accent); color: var(--on); font-size: 18px; font-weight: 600; }
+  .save button:disabled { opacity: .5; }
+  #msg { text-align: center; color: var(--muted); min-height: 24px; margin-top: 8px; }
+  .setup p { color: var(--muted); }
+  .setup input { margin-bottom: 12px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main id="app" hidden>
+  <h1>Journal du soir</h1>
+  <div class="sub" id="sub"></div>
+  <div class="days"><button id="today">Aujourd'hui</button><button id="yesterday">Hier</button></div>
+  <div id="form"></div>
+  <div id="msg"></div>
+</main>
+<div class="save" id="bar" hidden><button id="send" disabled>Enregistrer</button></div>
+
+<main id="setup" class="setup" hidden>
+  <h1>Journal du soir</h1>
+  <p>Ouvre le lien d'installation, ou colle l'adresse du script (finit par /exec) et le code d'accès.</p>
+  <input id="setupUrl" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+  <input id="setupKey" type="password" placeholder="Code d'accès" autocomplete="off">
+  <button id="setupGo">Continuer</button>
+</main>
+
+<script>
+  const CONFIG_KEY = 'journal-config', CACHE_KEY = 'journal-cache';
+  function readStore(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+  function writeStore(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+
+  // Configuration : le lien d'installation porte #u=<adresse du script>&k=<code>. On le garde dans l'adresse
+  // (l'icône d'écran d'accueil le reprend) et dans le stockage du téléphone.
+  function loadConfig() {
+    const h = new URLSearchParams(location.hash.slice(1));
+    if (h.get('u') && h.get('k')) {
+      const c = {u: h.get('u'), k: h.get('k')};
+      writeStore(CONFIG_KEY, c);
+      return c;
+    }
+    return readStore(CONFIG_KEY);
+  }
+  const CFG = loadConfig();
+
+  async function api(body) {
+    const res = await fetch(CFG.u, {method: 'POST', body: JSON.stringify(Object.assign({k: CFG.k}, body))});
+    let data;
+    try { data = await res.json(); } catch (e) { throw new Error('réponse illisible du script (déploiement « Tout le monde » ?)'); }
+    if (data && data.error) throw new Error(data.error);
+    return data;
+  }
+
+  // Date du téléphone. Avant 5 h du matin, on remplit par défaut la veille.
+  function iso(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  const now = new Date();
+  const TODAY = iso(now), YESTERDAY = iso(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+  let day = now.getHours() < 5 ? YESTERDAY : TODAY;
+
+  // Dernières questions et réponses connues : le formulaire s'affiche tout de suite, puis se met à jour.
+  const cache = Object.assign({questions: [], answers: {}}, readStore(CACHE_KEY) || {});
+  let questions = cache.questions, answers = {}, dirty = false;
+
+  function setAnswer(id, v) { answers[id] = v; dirty = true; }
+
+  // Boutons à choix unique ; un second appui sur le bouton choisi efface la réponse.
+  function buttons(opts, current, onChange) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    opts.forEach(([v, text]) => {
+      const b = document.createElement('button');
+      b.className = 'opt' + (current === v ? ' sel' : '');
+      b.textContent = text;
+      b.onclick = () => {
+        const next = row.querySelector('.sel') === b ? '' : v;
+        row.querySelectorAll('button').forEach(x => x.classList.toggle('sel', x === b && next !== ''));
+        onChange(next);
+      };
+      row.appendChild(b);
+    });
+    return row;
+  }
+
+  function field(type, value, onInput) {
+    const input = document.createElement(type === 'nombre' ? 'input' : 'textarea');
+    if (type === 'nombre') { input.type = 'number'; input.inputMode = 'decimal'; }
+    input.value = value;
+    input.oninput = () => onInput(type === 'nombre' && input.value !== '' ? Number(input.value) : input.value);
+    return input;
+  }
+
+  // Dictée : reconnaissance vocale du navigateur, en français. Le texte dicté s'ajoute à ce qui est déjà écrit.
+  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let listening = null;
+
+  function dictation(input, onInput) {
+    const wrap = document.createElement('div');
+    wrap.className = 'dict';
+    const mic = document.createElement('button');
+    mic.type = 'button';
+    mic.className = 'mic';
+    mic.textContent = '🎤 Dicter';
+    const hint = document.createElement('span');
+    hint.className = 'hint';
+    const fallback = 'Dictée indisponible ici : touche le champ puis le micro 🎤 du clavier.';
+    mic.onclick = () => {
+      if (listening) { listening.stop(); return; }
+      if (!Speech) { hint.textContent = fallback; input.focus(); return; }
+      const rec = new Speech();
+      rec.lang = 'fr-FR';
+      rec.continuous = true;
+      rec.interimResults = true;
+      const base = input.value.trim() ? input.value.trim() + ' ' : '';
+      rec.onresult = e => {
+        let text = '';
+        for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+        text = text.trim();
+        input.value = base + (base ? text : text.charAt(0).toUpperCase() + text.slice(1));
+        onInput(input.value);
+      };
+      rec.onerror = e => {
+        hint.textContent = /not-allowed|service-not-allowed|audio-capture/.test(e.error) ? fallback
+          : e.error === 'no-speech' ? 'Rien entendu, réessaie.' : 'Dictée interrompue (' + e.error + ').';
+      };
+      rec.onend = () => { listening = null; mic.classList.remove('on'); mic.textContent = '🎤 Dicter'; };
+      try { rec.start(); } catch (err) { hint.textContent = fallback; return; }
+      listening = rec;
+      mic.classList.add('on');
+      mic.textContent = '■ Arrêter';
+      hint.textContent = 'Je t\'écoute…';
+    };
+    wrap.appendChild(mic);
+    wrap.appendChild(hint);
+    return wrap;
+  }
+
+  function render() {
+    if (listening) listening.stop();
+    const form = document.getElementById('form');
+    form.innerHTML = '';
+    questions.forEach(q => {
+      const box = document.createElement('div');
+      box.className = 'q';
+      box.innerHTML = '<label></label>';
+      box.querySelector('label').textContent = q.label + (q.type === 'echelle' ? ' (' + q.min + '–' + q.max + ')' : '');
+      const cur = answers[q.id] === undefined ? '' : String(answers[q.id]);
+      if (q.type === 'echelle') {
+        const opts = [];
+        for (let v = q.min; v <= q.max; v++) opts.push([String(v), String(v)]);
+        box.appendChild(buttons(opts, cur, v => setAnswer(q.id, v === '' ? '' : Number(v))));
+      } else if (q.type === 'ouinon') {
+        box.appendChild(buttons([['oui', 'Oui'], ['non', 'Non']], cur, v => setAnswer(q.id, v)));
+      } else if (q.type === 'ouinon_texte' || q.type === 'ouinon_nombre') {
+        // « Oui » ouvre un champ : le nom du médicament, la durée… « Non » enregistre non ou 0.
+        const isNum = q.type === 'ouinon_nombre';
+        const no = isNum ? '0' : 'non';
+        const choice = cur === '' ? '' : cur === no ? 'non' : 'oui';
+        const detail = field(isNum ? 'nombre' : 'texte', choice === 'oui' && cur !== 'oui' ? cur : '', v => {
+          setAnswer(q.id, v === '' ? (isNum ? '' : 'oui') : v);
+        });
+        detail.placeholder = isNum ? 'Durée en minutes' : 'Lequel ?';
+        detail.style.marginTop = '10px';
+        detail.style.display = choice === 'oui' ? 'block' : 'none';
+        box.appendChild(buttons([['oui', 'Oui'], ['non', 'Non']], choice, v => {
+          detail.style.display = v === 'oui' ? 'block' : 'none';
+          if (v === 'oui') {
+            detail.focus();
+            setAnswer(q.id, detail.value === '' ? (isNum ? '' : 'oui') : (isNum ? Number(detail.value) : detail.value));
+          } else {
+            setAnswer(q.id, v === 'non' ? (isNum ? 0 : 'non') : '');
+          }
+        }));
+        box.appendChild(detail);
+      } else if (q.type === 'texte') {
+        const input = field('texte', cur, v => setAnswer(q.id, v));
+        box.appendChild(input);
+        box.appendChild(dictation(input, v => setAnswer(q.id, v)));
+      } else {
+        box.appendChild(field(q.type, cur, v => setAnswer(q.id, v)));
+      }
+      form.appendChild(box);
+    });
+  }
+
+  function show(d, note) {
+    const saved = cache.answers[d] || {};
+    answers = Object.assign({}, saved);
+    dirty = false;
+    render();
+    const done = Object.keys(saved).some(k => saved[k] !== '');
+    document.getElementById('sub').textContent = new Date(d + 'T12:00').toLocaleDateString('fr-FR',
+      {weekday: 'long', day: 'numeric', month: 'long'}) + (done ? ' · déjà rempli, tu peux corriger' : '') + (note || '');
+    document.getElementById('send').disabled = !questions.length;
+  }
+
+  // Va chercher au serveur les questions et les réponses de ces jours, puis rafraîchit si rien n'a été touché.
+  function refresh(days) {
+    return api({action: 'load', days: days}).then(res => {
+      cache.questions = questions = res.questions;
+      Object.assign(cache.answers, res.answers);
+      Object.keys(cache.answers).sort().slice(0, -14).forEach(k => delete cache.answers[k]);  // garde 2 semaines
+      writeStore(CACHE_KEY, cache);
+      if (days.indexOf(day) >= 0 && !dirty) show(day);
+    }).catch(e => {
+      if (!questions.length) document.getElementById('sub').textContent = 'Erreur : ' + e.message;
+      else document.getElementById('msg').textContent = 'Hors ligne ? (' + e.message + ')';
+    });
+  }
+
+  function setDay(d) {
+    day = d;
+    document.getElementById('today').classList.toggle('sel', d === TODAY);
+    document.getElementById('yesterday').classList.toggle('sel', d === YESTERDAY);
+    document.getElementById('msg').textContent = '';
+    if (questions.length) show(d);
+    else document.getElementById('sub').textContent = 'Chargement…';
+  }
+
+  function start() {
+    document.getElementById('app').hidden = false;
+    document.getElementById('bar').hidden = false;
+    document.getElementById('today').onclick = () => setDay(TODAY);
+    document.getElementById('yesterday').onclick = () => setDay(YESTERDAY);
+    document.getElementById('send').onclick = () => {
+      const btn = document.getElementById('send');
+      btn.disabled = true;
+      btn.textContent = 'Enregistrement…';
+      const sent = {}, savedDay = day;
+      questions.forEach(q => { sent[q.id] = answers[q.id] === undefined ? '' : answers[q.id]; });
+      api({action: 'save', day: savedDay, answers: sent}).then(res => {
+        cache.answers[savedDay] = sent;
+        writeStore(CACHE_KEY, cache);
+        dirty = false;
+        document.getElementById('msg').textContent = '✓ Enregistré · ' + res.streak + ' jour' + (res.streak > 1 ? 's' : '') + ' de suite';
+      }).catch(e => {
+        document.getElementById('msg').textContent = 'Erreur : ' + e.message + ' — tes réponses sont encore là, réessaie.';
+      }).finally(() => {
+        btn.textContent = 'Enregistrer';
+        btn.disabled = false;
+      });
+    };
+    setDay(day);
+    refresh([TODAY, YESTERDAY]);
+  }
+
+  if (CFG && CFG.u && CFG.k) {
+    start();
+  } else {
+    document.getElementById('setup').hidden = false;
+    document.getElementById('setupGo').onclick = () => {
+      const u = document.getElementById('setupUrl').value.trim(), k = document.getElementById('setupKey').value.trim();
+      if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(u) || !k) return;
+      writeStore(CONFIG_KEY, {u: u, k: k});
+      location.reload();
+    };
+  }
+</script>
+</body>
+</html>
